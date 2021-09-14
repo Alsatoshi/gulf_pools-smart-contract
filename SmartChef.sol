@@ -567,6 +567,68 @@ abstract contract Ownable is Context {
 }
 
 
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and make it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+
 // File: contracts/SmartChef.sol
 pragma solidity 0.6.12;
 
@@ -589,15 +651,15 @@ contract SmartChef is Ownable {
     }
 
     // The KRILL TOKEN!
-    IERC20 public krill;
+    IERC20 public immutable krill;
     
     // THE REWARD TOKEN
-    IERC20 public rewardToken;
+    IERC20 public immutable rewardToken;
 
     // Reward tokens created per block.
-    uint256 public rewardPerBlock;
+    uint256 public immutable rewardPerBlock;
     // Maximum amount of KRILL that can be deposited
-    uint256 public maxDeposit;
+    uint256 public immutable maxDeposit;
     // Info of each pool.
     PoolInfo[] public poolInfo;
     // Info of each user that stakes LP tokens.
@@ -614,6 +676,8 @@ contract SmartChef is Ownable {
     event Deposit(address indexed user, uint256 amount);
     event Withdraw(address indexed user, uint256 amount);
     event EmergencyWithdraw(address indexed user, uint256 amount);
+    event AdjustBlockEnd(address indexed user);
+    // event StopReward(address indexed user);
 
     constructor(
         IERC20 _krill,
@@ -632,9 +696,11 @@ contract SmartChef is Ownable {
         burnMultiplier = _burnMultiplier;
         maxDeposit = _maxDeposit;
 
+        require(_burnMultiplier <= 100, "Burn amount too high!");
+
         // staking pool
         poolInfo.push(PoolInfo({
-            lpToken: _krill,
+            lpToken: _krill, // KRILL token(https://polygonscan.com/address/0x05089C9EBFFa4F0AcA269e32056b1b36B37ED71b)
             allocPoint: 1000,
             lastRewardBlock: startBlock,
             accRewardPerShare: 0
@@ -644,13 +710,16 @@ contract SmartChef is Ownable {
 
     }
 
-    function stopReward() public onlyOwner {
-        bonusEndBlock = block.number;
-    }
+    // function stopReward() public onlyOwner {
+    //     bonusEndBlock = block.number;
+    //     emit StopReward(msg.sender);
+    // }
 
-    function adjustBlockEnd() public onlyOwner {
+    function adjustBlockEnd() external onlyOwner {
         uint256 totalLeft = rewardToken.balanceOf(address(this));
-        bonusEndBlock = block.number + totalLeft.div(rewardPerBlock);
+        bonusEndBlock = block.number.add(totalLeft.div(rewardPerBlock));
+
+        emit AdjustBlockEnd(msg.sender);
     }
 
     // Return reward multiplier over the given _from to _to block.
@@ -697,10 +766,11 @@ contract SmartChef is Ownable {
 
 
     // Stake KRILL tokens to SmartChef
-    function deposit(uint256 _amount) public {
+    function deposit(uint256 _amount) public nonReentrant {
         PoolInfo storage pool = poolInfo[0];
         UserInfo storage user = userInfo[msg.sender];
         require(pool.lpToken.balanceOf(address(this)) <= maxDeposit,"Deposit limit reached!!");
+        require(pool.lpToken.balanceOf(address(this)).add(_amount) <= maxDeposit,"Deposit limit reached!!");
         updatePool(0);
         if (user.amount > 0) {
             uint256 pending = user.amount.mul(pool.accRewardPerShare).div(1e18).sub(user.rewardDebt);
@@ -711,11 +781,12 @@ contract SmartChef is Ownable {
         }
         if(_amount > 0) {
             uint256 burnAmount = _amount.mul(burnMultiplier).div(1000);
-            pool.lpToken.safeTransferFrom(address(msg.sender), address(this), _amount - burnAmount);
+            uint256 sendAmount = _amount.sub(burnAmount);
+            pool.lpToken.safeTransferFrom(address(msg.sender), address(this), sendAmount);
             if (burnAmount > 0) {
                 pool.lpToken.safeTransferFrom(address(msg.sender), address(0x00dead), burnAmount);
             }
-            user.amount = user.amount.add(_amount - burnAmount);
+            user.amount = user.amount.add(sendAmount);
         }
         user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(1e18);
 
@@ -723,7 +794,7 @@ contract SmartChef is Ownable {
     }
 
     // Withdraw KRILL tokens from STAKING.
-    function withdraw(uint256 _amount) public {
+    function withdraw(uint256 _amount) external nonReentrant {
         PoolInfo storage pool = poolInfo[0];
         UserInfo storage user = userInfo[msg.sender];
         require(user.amount >= _amount, "withdraw: not good");
@@ -742,7 +813,7 @@ contract SmartChef is Ownable {
     }
 
     // Withdraw without caring about rewards. EMERGENCY ONLY.
-    function emergencyWithdraw() public {
+    function emergencyWithdraw() external nonReentrant {
         PoolInfo storage pool = poolInfo[0];
         UserInfo storage user = userInfo[msg.sender];
         pool.lpToken.safeTransfer(address(msg.sender), user.amount);
