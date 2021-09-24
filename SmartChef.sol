@@ -772,6 +772,7 @@ contract SmartChef is Ownable {
         require(pool.lpToken.balanceOf(address(this)) <= maxDeposit,"Deposit limit reached!!");
         require(pool.lpToken.balanceOf(address(this)).add(_amount) <= maxDeposit,"Deposit limit reached!!");
         updatePool(0);
+
         if (user.amount > 0) {
             uint256 pending = user.amount.mul(pool.accRewardPerShare).div(1e18).sub(user.rewardDebt);
             if(pending > 0) {
@@ -779,14 +780,19 @@ contract SmartChef is Ownable {
                 rewardToken.safeTransfer(address(msg.sender), pending);
             }
         }
+
         if(_amount > 0) {
             uint256 burnAmount = _amount.mul(burnMultiplier).div(1000);
             uint256 sendAmount = _amount.sub(burnAmount);
+
+            uint256 _beforeTransferAmount = pool.lpToken.balanceOf(address(this));
             pool.lpToken.safeTransferFrom(address(msg.sender), address(this), sendAmount);
+            uint256 _afterTransferAmount = pool.lpToken.balanceOf(address(this));
+            uint256 _sendAmount = _afterTransferAmount - _beforeTransferAmount;
             if (burnAmount > 0) {
                 pool.lpToken.safeTransferFrom(address(msg.sender), address(0x00dead), burnAmount);
             }
-            user.amount = user.amount.add(sendAmount);
+            user.amount = user.amount.add(_sendAmount);
         }
         user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(1e18);
 
